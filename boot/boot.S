@@ -44,6 +44,23 @@ _start:
     addl $8, %edi
     loop 1b
 
+    /* Identity-map the upper 1 GiB (0xC0000000-0xFFFFFFFF) uncached so
+       PCI MMIO BARs such as the virtio-pci common config are accessible. */
+    movl $pd_hi_table, %eax
+    orl $0x03, %eax
+    movl %eax, pdpt_table + 24
+    movl $0, pdpt_table + 28
+
+    movl $pd_hi_table, %edi
+    movl $0xC000009B, %eax
+    movl $512, %ecx
+3:
+    movl %eax, (%edi)
+    movl $0, 4(%edi)
+    addl $0x00200000, %eax
+    addl $8, %edi
+    loop 3b
+
     /* Enable PAE. */
     movl %cr4, %eax
     orl $0x00000020, %eax
@@ -105,6 +122,9 @@ pdpt_table:
     .skip 4096
 .align 4096
 pd_table:
+    .skip 4096
+.align 4096
+pd_hi_table:
     .skip 4096
 .align 16
 stack_bottom:

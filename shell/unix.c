@@ -5,6 +5,7 @@
 #include "env.h"
 #include "ramfs.h"
 #include "time.h"
+#include "virtio_gpu.h"
 #include <stdint.h>
 
 #define OS_NAME "RioOS"
@@ -1722,6 +1723,117 @@ void unix_lspci(int argc, char **argv) {
         }
     }
     if (!found) outln("lspci: no PCI devices found");
+}
+
+static int parse_hex_color(const char *s, uint32_t *out) {
+    if (!s || !*s) return -1;
+    if (*s == '#') ++s;
+    unsigned value = 0;
+    int digits = 0;
+    while (*s) {
+        unsigned digit;
+        if (*s >= '0' && *s <= '9') digit = (unsigned)(*s - '0');
+        else if (*s >= 'a' && *s <= 'f') digit = (unsigned)(*s - 'a' + 10);
+        else if (*s >= 'A' && *s <= 'F') digit = (unsigned)(*s - 'A' + 10);
+        else return -1;
+        value = (value << 4) | digit;
+        ++digits;
+        ++s;
+    }
+    if (digits != 6) return -1;
+    *out = gpu_color((uint8_t)(value >> 16), (uint8_t)(value >> 8), (uint8_t)value);
+    return 0;
+}
+
+static int gpu_require(const char *cmd) {
+    if (gpu_ready()) return 0;
+    cmd_error(cmd, "virtio-gpu device is not initialized");
+    return -1;
+}
+
+void unix_gpuinfo(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    if (gpu_require("gpuinfo") != 0) return;
+    gpu_info_t info;
+    gpu_get_info(&info);
+
+    out("VirtIO GPU: ");
+    out_hex_padded(info.bus, 2, 0);
+    vga_putc(':');
+    out_hex_padded(info.slot, 2, 0);
+    vga_putc('.');
+    out_uint(info.func);
+    out("  ");
+    out_hex_padded(info.vendor, 4, 0);
+    vga_putc(':');
+    out_hex_padded(info.device, 4, 0);
+    vga_putc('\n');
+
+    out("  Device features: 0x");
+    out_hex_padded(info.device_features[1], 8, 0);
+    out_hex_padded(info.device_features[0], 8, 0);
+    vga_putc('\n');
+    out("  Control queue: ");
+    out_uint(info.queue_size);
+    outln(" descriptors");
+    out("  Scanout 0: ");
+    out_uint(info.width);
+    vga_putc('x');
+    out_uint(info.height);
+    outln(" B8G8R8A8");
+    out("  Framebuffer: 0x");
+    out_hex_padded((unsigned)info.framebuffer_phys, 8, 0);
+    out(" (");
+    out_uint(info.framebuffer_size / 1024U);
+    outln(" KiB)");
+}
+
+void unix_gputest(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    if (gpu_require("gputest") != 0) return;
+    gpu_test_pattern();
+    outln("virtio-gpu: test pattern rendered on scanout 0.");
+}
+
+void unix_gpuclr(int argc, char **argv) {
+    uint32_t color = gpu_color(0, 0, 0);
+    if (argc > 2) {
+        usage_error("gpuclr", "[RRGGBB]");
+        return;
+    }
+    if (argc == 2 && parse_hex_color(argv[1], &color) != 0) {
+        cmd_error("gpuclr", "invalid colour (expected RRGGBB)");
+        return;
+    }
+    if (gpu_require("gpuclr") != 0) return;
+    gpu_info_t info;
+    gpu_get_info(&info);
+    gpu_clear(color);
+    if (gpu_flush(0, 0, info.width, info.height) != 0) {
+        cmd_error("gpuclr", "resource flush failed");
+    }
+}
+
+void unix_gpudraw(int argc, char **argv) {
+    if (argc != 6) {
+        usage_error("gpudraw", "X Y W H RRGGBB");
+        return;
+    }
+    unsigned x, y, w, h;
+    uint32_t color;
+    if (str_to_uint(argv[1], &x) != 0 || str_to_uint(argv[2], &y) != 0 ||
+        str_to_uint(argv[3], &w) != 0 || str_to_uint(argv[4], &h) != 0 ||
+        parse_hex_color(argv[5], &color) != 0) {
+        cmd_error("gpudraw", "invalid arguments");
+        return;
+    }
+    if (gpu_require("gpudraw") != 0) return;
+    gpu_fill_rect(x, y, w, h, color);
+    if (gpu_flush(x, y, w, h) != 0) {
+        cmd_error("gpudraw", "resource flush failed");
+    }
 }
 
 void unix_ps(int argc, char **argv) {
